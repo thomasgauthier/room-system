@@ -9,18 +9,23 @@ class Room implements SocketIOClient.Socket {
 
   private socket: SocketIOClient.Socket;
 
-  constructor(room: string, clb?: Function, opts?: SocketIOClient.ConnectOpts) {
-    this.socket = io(opts);
+  constructor(
+    authentication: { username: string; room: string; password: string },
+    url?: string,
+    opts?: SocketIOClient.ConnectOpts,
+    clb?: Function
+  ) {
+    this.socket = io(url, opts);
 
-    this.socket.emit("joinRoom", room, function(ack: any) {
+    this.socket.emit("joinRoom", authentication, function (ack: any) {
       clb?.call(null, ack);
     });
   }
 
-  async request(event: string, req:any) {
+  async request(event: string, req: any) {
     return new Promise((resolve, reject) => {
       try {
-        this.socket.emit(event, req, function(res: any) {
+        this.socket.emit(event, req, function (res: any) {
           resolve(res);
         });
       } catch (e) {
@@ -79,4 +84,4 @@ class Room implements SocketIOClient.Socket {
   }
 }
 
-export default Room;
+export = Room;

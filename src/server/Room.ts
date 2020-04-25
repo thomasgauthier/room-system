@@ -1,4 +1,6 @@
 import EventEmitter from "eventemitter3";
+import SimpleTupleMap from "./SimpleTupleMap";
+import * as argon2 from "argon2";
 
 const DELETE_ROOM_TIMEOUT = 5 * 60 * 1000;
 
@@ -10,6 +12,7 @@ export interface Client {
 export interface RoomEvents {
   emptyTimeout: [Room];
   userJoin: [Room, string, SocketIO.Socket];
+  userLeave: [Room, string, SocketIO.Socket];
 }
 
 export type RequestCallback = (
@@ -23,7 +26,10 @@ export interface RequestHandler {
   callback: RequestCallback;
 }
 
-type MessageHandlerListener = (socket: SocketIO.Socket, args: any[]) => void;
+export type MessageHandlerListener = (
+  socket: SocketIO.Socket,
+  ...args: any[]
+) => void;
 
 export interface MessageHandler {
   event: string | symbol;
@@ -32,6 +38,7 @@ export interface MessageHandler {
 
 export default class Room extends EventEmitter<RoomEvents> {
   name: string;
+  hash: string = null;
 
   io: any;
 
@@ -42,23 +49,36 @@ export default class Room extends EventEmitter<RoomEvents> {
   requestHandlers: RequestHandler[] = [];
   messageHandlers: MessageHandler[] = [];
 
-  messageListenerBindedMap: Map<
-    MessageHandlerListener,
-    MessageHandlerListener
-  > = new Map<MessageHandlerListener, MessageHandlerListener>();
-
   customData: { [key: string]: any } = {};
 
-  constructor(name: string, io: SocketIO.Server) {
+  messageHandlerMap: SimpleTupleMap<
+    [SocketIO.Socket, Function]
+  > = new SimpleTupleMap<[SocketIO.Socket, Function]>();
+
+  constructor(
+    name: string,
+    password: string,
+    io: SocketIO.Server,
+    callback?: Function
+  ) {
     super();
     this.name = name;
 
     this.io = io;
+
+    if (password) {
+      argon2.hash(password).then((hash) => {
+        this.hash = hash;
+        if (callback) callback();
+      });
+    } else {
+      if (callback) callback();
+    }
   }
 
-  // public isUsernameTaken(id: string): boolean {
-  //   return this.clients.findIndex(c => c.id === id) >= 0;
-  // }
+  public isUsernameTaken(id: string): boolean {
+    return this.clients.findIndex(c => c.id === id) >= 0;
+  }
 
   onEmptyTimeout() {
     this.emit("emptyTimeout", this);
@@ -68,7 +88,9 @@ export default class Room extends EventEmitter<RoomEvents> {
     this.io.to(this.name).emit(channel, obj);
   }
 
-  addRequestHandler(handler: RequestHandler) {
+  addRequestHandler(event: string | symbol, callback: RequestCallback) {
+    const handler: RequestHandler = { event, callback };
+
     const previousHandlerIndex = this.requestHandlers.findIndex(
       ({ event }) => event === handler.event
     );
@@ -84,21 +106,23 @@ export default class Room extends EventEmitter<RoomEvents> {
     }
   }
 
-  removeRequestHandler(handler: RequestHandler) {
+  removeRequestHandler(event: string | symbol) {
     const previousHandlerIndex = this.requestHandlers.findIndex(
-      ({ event }) => event === handler.event
+      ({ event }) => event === event
     );
 
     if (previousHandlerIndex >= 0) {
       this.requestHandlers.splice(previousHandlerIndex, 1);
 
       for (const socket of this.sockets) {
-        socket.removeAllListeners(handler.event);
+        socket.removeAllListeners(event);
       }
     }
   }
 
-  addMessageHandler(handler: MessageHandler) {
+  addMessageHandler(event: string | symbol, listener: MessageHandlerListener) {
+    const handler: MessageHandler = { event, listener };
+
     const previousHandlerIndex = this.messageHandlers.findIndex(
       ({ event }) => event === handler.event
     );
@@ -123,13 +147,9 @@ export default class Room extends EventEmitter<RoomEvents> {
       const previousHandler = this.messageHandlers[previousHandlerIndex];
       this.messageHandlers.splice(previousHandlerIndex, 1);
 
-      let listener = this.messageListenerBindedMap.get(
-        previousHandler.listener
-      );
-
       for (const socket of this.sockets) {
+        let listener = this.messageHandlerMap.get([socket, handler.listener]);
         socket.off(previousHandler.event, listener);
-        this.messageListenerBindedMap.delete(previousHandler.listener);
       }
     }
   }
@@ -148,60 +168,74 @@ export default class Room extends EventEmitter<RoomEvents> {
     socket: SocketIO.Socket,
     handler: MessageHandler
   ) {
-    let listener = this.messageListenerBindedMap.get(handler.listener);
-    if (!listener) {
-      listener = (...args) => {
-        handler.listener.call(this, socket, ...args);
-      };
-      this.messageListenerBindedMap.set(handler.listener, listener);
-    }
+    let listener = (...args: any[]) => {
+      handler.listener(socket, ...args);
+    };
+
+    this.messageHandlerMap.set([socket, handler.listener], listener);
     socket.on(handler.event, listener);
   }
 
   get sockets() {
-    return this.clients.map(client => client.socket);
+    return this.clients.map((client) => client.socket);
   }
 
-  join(socket: SocketIO.Socket, id: string): Room {
-    clearTimeout(this.emptyTimeout);
-
-    socket.on;
-
-    let existingClient = this.clients.find(c => c.id === id);
-    if (existingClient) {
-      existingClient.socket = socket;
-    } else {
-      const client = { socket, id };
-      this.clients.push(client);
-    }
-
-    socket.on("disconnect", () => {
-      let index = this.clients.findIndex(c => c.socket !== socket);
-
-      if (index >= 0) {
-        this.clients.splice(index, 1);
+  async join(
+    socket: SocketIO.Socket,
+    id: string,
+    password: string
+  ): Promise<Room> {
+    return new Promise(async (resolve, reject) => {
+      const verified = await argon2.verify(this.hash, password);
+      if (!verified) {
+        reject();
+        return;
       }
 
-      if (this.clients.length === 0) {
-        this.emptyTimeout = setTimeout(
-          this.onEmptyTimeout.bind(this),
-          DELETE_ROOM_TIMEOUT
-        );
+      clearTimeout(this.emptyTimeout);
+
+      socket.on;
+
+      let existingClient = this.clients.find((c) => c.id === id);
+      if (existingClient) {
+        existingClient.socket = socket;
+      } else {
+        const client = { socket, id };
+        this.clients.push(client);
       }
+
+      socket.on("disconnect", () => {
+        let index = this.clients.findIndex((c) => c.socket !== socket);
+
+        if (index >= 0) {
+          this.clients.splice(index, 1);
+        }
+
+        if (this.clients.length === 0) {
+          this.emptyTimeout = setTimeout(
+            this.onEmptyTimeout.bind(this),
+            DELETE_ROOM_TIMEOUT
+          );
+        }
+
+        setTimeout(() => {
+          this.emit("userLeave", this, id, socket);
+        }, 0);
+      });
+
+      for (const handler of this.requestHandlers) {
+        this.addRequestHandlerToSocket(socket, handler);
+      }
+
+      for (const handler of this.messageHandlers) {
+        this.addMessageHandlerToSocket(socket, handler);
+      }
+
+      setTimeout(() => {
+        this.emit("userJoin", this, id, socket);
+      }, 0);
+
+      resolve(this);
     });
-
-    for (const handler of this.requestHandlers) {
-      this.addRequestHandlerToSocket(socket, handler);
-    }
-
-    for (const handler of this.messageHandlers) {
-      this.addMessageHandlerToSocket(socket, handler);
-    }
-
-    setTimeout(() => {
-      this.emit("userJoin", this, id, socket);
-    }, 0);
-
-    return this;
   }
 }
