@@ -59,7 +59,7 @@ export default class Room extends EventEmitter<RoomEvents> {
     name: string,
     password: string,
     io: SocketIO.Server,
-    callback?: Function
+    callback?: (room:Room) => void
   ) {
     super();
     this.name = name;
@@ -69,10 +69,10 @@ export default class Room extends EventEmitter<RoomEvents> {
     if (password) {
       argon2.hash(password).then((hash) => {
         this.hash = hash;
-        if (callback) callback();
+        if (callback) callback(this);
       });
     } else {
-      if (callback) callback();
+      if (callback) callback(this);
     }
   }
 
@@ -186,7 +186,7 @@ export default class Room extends EventEmitter<RoomEvents> {
     password: string
   ): Promise<Room> {
     return new Promise(async (resolve, reject) => {
-      const verified = await argon2.verify(this.hash, password);
+      const verified = !this.hash || await argon2.verify(this.hash, password);
       if (!verified) {
         reject();
         return;

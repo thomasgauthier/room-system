@@ -32,7 +32,7 @@ export default class Room extends EventEmitter<RoomEvents> {
         [key: string]: any;
     };
     messageHandlerMap: SimpleTupleMap<[SocketIO.Socket, Function]>;
-    constructor(name: string, password: string, io: SocketIO.Server, callback?: Function);
+    constructor(name: string, password: string, io: SocketIO.Server, callback?: (room: Room) => void);
     isUsernameTaken(id: string): boolean;
     onEmptyTimeout(): void;
     broadcast(channel: string, obj: any): void;

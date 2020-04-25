@@ -27,13 +27,13 @@ class RoomSystem {
           }
 
           const room: Room = await new Promise((resolve, reject) => {
-            let room = this.rooms.get(roomId);
-            if (room) {
-              resolve(room);
+            let newRoom = this.rooms.get(roomId);
+            if (newRoom) {
+              resolve(newRoom);
             } else {
-              room = new Room(roomId, "password", io, () => {
-                roomCreationCallback(room);
-                resolve(room);
+              new Room(roomId, password, io, (newRoom) => {
+                roomCreationCallback(newRoom);
+                resolve(newRoom);
               });
             }
           });
@@ -42,7 +42,7 @@ class RoomSystem {
 
           try {
             await room.join(socket, username, password);
-            if (clb) clb({ status: 200 });
+            if (clb) clb({ status: 200, username });
           } catch {
             if (clb) clb({ status: 401 });
           }
