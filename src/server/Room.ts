@@ -205,7 +205,7 @@ export default class Room extends EventEmitter<RoomEvents> {
       }
 
       socket.on("disconnect", () => {
-        let index = this.clients.findIndex((c) => c.socket !== socket);
+        let index = this.clients.findIndex((c) => c.socket === socket);
 
         if (index >= 0) {
           this.clients.splice(index, 1);
